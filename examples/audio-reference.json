@@ -1,0 +1,8 @@
+{
+  "model": "seedance-2.5",
+  "prompt": "A jazz trio plays in a smoky basement club, the drummer hits every accent of @Audio 1, handheld close-ups",
+  "duration": 12,
+  "resolution": "480p",
+  "aspect_ratio": "4:3",
+  "reference_audios": [{"url": "https://example.com/drum-loop.wav"}]
+}

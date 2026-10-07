@@ -1,0 +1,8 @@
+{
+  "model": "seedance-2.5",
+  "prompt": "The chef lifts the lid and steam rolls toward the camera, slow push-in, warm kitchen light",
+  "duration": 5,
+  "resolution": "1080p",
+  "aspect_ratio": "adaptive",
+  "start_image": {"url": "https://example.com/kitchen-first-frame.png"}
+}

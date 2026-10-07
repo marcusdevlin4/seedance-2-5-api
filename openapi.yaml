@@ -1,0 +1,688 @@
+openapi: 3.1.0
+info:
+  title: Seedance 2.5 video generation API
+  version: "2026-10-07"
+  summary: Submit, poll and download ByteDance Seedance 2.5 video jobs over HTTPS.
+  description: |
+    Machine-readable contract for the `seedance-2.5` video endpoints served at
+    `https://argolink.io/v1`, written from the provider's public API guide
+    (https://argolink.io/en/docs#/seedance) and model page
+    (https://argolink.io/en/models/seedance-2.5) as they read on 2026-10-07.
+
+    A job is asynchronous: `POST /v1/videos/generations` returns a `request_id`,
+    `GET /v1/videos/{request_id}` reports `pending`, `done`, `failed` or `expired`,
+    and `GET /v1/videos/{request_id}/content` streams the MP4 once the job is `done`.
+    There is no webhook. Local files are uploaded first through `POST /v1/media/uploads`;
+    the generation request itself carries HTTPS URLs only.
+
+    The same endpoint also serves `seedance-2.0`, `seedance-2.0-fast` and
+    `seedance-2.0-mini`, whose narrower limits are not modelled here.
+    This file is not maintained by the provider; the hosted documentation wins where
+    the two differ.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: https://argolink.io
+security:
+  - bearerAuth: []
+tags:
+  - name: Videos
+    description: Seedance 2.5 generation jobs.
+  - name: Media
+    description: Upload tickets for local images, videos and audio.
+  - name: Models
+    description: Public model discovery.
+
+paths:
+  /v1/videos/generations:
+    post:
+      tags: [Videos]
+      operationId: createVideoGeneration
+      summary: Submit a video job
+      description: |
+        The fields present pick the mode: a prompt alone (text to video),
+        `start_image` (first frame), `start_image` + `end_image` (first and last frame),
+        any of the three reference lists (reference), or
+        `omni_reference_task_type: edit` with one entry in `reference_videos` (edit).
+        Frame fields and reference lists cannot be combined. Images, videos and audio
+        together are limited to 50 per request. Name an asset in the prompt as
+        `@Image 1`, `@Video 1` or `@Audio 1`; a number past the end of its list is
+        rejected. The JSON body must stay under 1 MiB.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerationRequest"
+            examples:
+              textToVideo:
+                summary: Text to video, 8 s at 720p
+                externalValue: examples/text-to-video.json
+              firstFrame:
+                summary: First frame, 1080p
+                externalValue: examples/first-frame.json
+              firstLastFrame:
+                summary: First and last frame
+                externalValue: examples/first-last-frame.json
+              reference:
+                summary: Images, a video and an audio clip as references
+                externalValue: examples/reference.json
+              audioReference:
+                summary: Audio-only reference
+                externalValue: examples/audio-reference.json
+              edit:
+                summary: Edit an existing video
+                externalValue: examples/edit.json
+      responses:
+        "202":
+          description: Job accepted. Keep `request_id`; it is the only handle for status, download and billing records.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmitResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /v1/videos/{request_id}:
+    get:
+      tags: [Videos]
+      operationId: getVideoGeneration
+      summary: Read a job's status
+      description: |
+        Poll every 10-15 seconds. While `pending`, `progress` runs 0-99 and
+        `estimated_seconds_remaining` appears once a forecast exists. A job that finds
+        no capacity within 10 minutes of queueing ends `failed` with
+        `capacity_unavailable`; a started job ends with `generation_timeout` only if it
+        is still unfinished after 24 hours. Billing happens once, when `done` is first
+        observed, for `usage.billed_seconds`.
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: The job.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+              examples:
+                pending:
+                  $ref: "#/components/examples/PendingJob"
+                done:
+                  $ref: "#/components/examples/DoneJob"
+                failed:
+                  $ref: "#/components/examples/FailedJob"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/videos/{request_id}/content:
+    get:
+      tags: [Videos]
+      operationId: downloadVideoContent
+      summary: Download the finished MP4
+      description: The same address the status returns as `video.url`. Request it with the key that created the job.
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+        - name: Range
+          in: header
+          required: false
+          description: Optional byte range; partial downloads are supported.
+          schema:
+            type: string
+            examples: ["bytes=0-1048575"]
+      responses:
+        "200":
+          description: The video.
+          content:
+            video/mp4:
+              schema:
+                type: string
+                contentMediaType: video/mp4
+        "206":
+          description: The requested byte range of the video.
+          content:
+            video/mp4:
+              schema:
+                type: string
+                contentMediaType: video/mp4
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/NotReady"
+        "424":
+          $ref: "#/components/responses/JobFailed"
+
+  /v1/media/uploads:
+    post:
+      tags: [Media]
+      operationId: createMediaUpload
+      summary: Get an upload ticket for a local file
+      description: |
+        Free and creates no job. PUT the file bytes to `upload_url` within 15 minutes
+        with exactly the declared `Content-Type`, then put `media_url` (readable for
+        seven days) into `start_image`, `end_image` or a reference list.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadTicketRequest"
+            example:
+              model: seedance-2.5
+              type: video
+              content_type: video/mp4
+              size_bytes: 18432011
+      responses:
+        "2XX":
+          description: Upload ticket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadTicket"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/models:
+    get:
+      tags: [Models]
+      operationId: listModels
+      summary: List the models the gateway sells
+      description: Public; needs no key. `/models` is an exact alias and `/v1beta/models` returns the Gemini shape.
+      security: []
+      responses:
+        "200":
+          description: OpenAI-compatible model list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelList"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "`Authorization: Bearer <API key>`. Status and content lookups only work with a key of the user who created the job."
+
+  parameters:
+    RequestId:
+      name: request_id
+      in: path
+      required: true
+      description: The `request_id` returned by the submit call.
+      schema:
+        type: string
+
+  schemas:
+    MediaRef:
+      type: object
+      required: [url]
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          format: uri
+          pattern: "^https://"
+          description: Public HTTPS address; every redirect must stay on HTTPS. Base64 data URIs, multipart and file IDs are rejected.
+
+    Duration:
+      description: Whole seconds, 4-30. Only an edit may send -1, meaning "keep the source length".
+      anyOf:
+        - type: integer
+          minimum: 4
+          maximum: 30
+        - type: integer
+          const: -1
+
+    AspectRatio:
+      type: string
+      enum: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"]
+
+    GenerationRequest:
+      type: object
+      required: [model, prompt]
+      additionalProperties: false
+      properties:
+        model:
+          type: string
+          const: seedance-2.5
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 40000
+          description: Required in every mode, at most 40,000 bytes of UTF-8. Describe camera motion, subject action and mood.
+        duration:
+          $ref: "#/components/schemas/Duration"
+        seconds:
+          $ref: "#/components/schemas/Duration"
+        resolution:
+          type: string
+          enum: ["480p", "720p", "1080p"]
+          default: "720p"
+        aspect_ratio:
+          $ref: "#/components/schemas/AspectRatio"
+        ratio:
+          $ref: "#/components/schemas/AspectRatio"
+        size:
+          type: string
+          pattern: "^[0-9]+x[0-9]+$"
+          description: WIDTHxHEIGHT instead of resolution + aspect_ratio. The short side picks the tier and the shape picks the ratio, so 1280x720 is 720p 16:9. A resolution or aspect_ratio sent with it must match.
+        start_image:
+          $ref: "#/components/schemas/MediaRef"
+        end_image:
+          $ref: "#/components/schemas/MediaRef"
+        image_url:
+          type: string
+          format: uri
+          description: fal-style alias of start_image (a URL string).
+        end_image_url:
+          type: string
+          format: uri
+          description: fal-style alias of end_image.
+        reference_images:
+          type: array
+          maxItems: 30
+          items:
+            $ref: "#/components/schemas/MediaRef"
+        reference_videos:
+          type: array
+          maxItems: 10
+          description: 2-30 s each and 30 s together; their seconds are billed. In an edit the single entry is the video to edit (4-30 s).
+          items:
+            $ref: "#/components/schemas/MediaRef"
+        reference_audios:
+          type: array
+          maxItems: 10
+          description: 2-30 s each and 30 s together. May be sent without images or videos.
+          items:
+            $ref: "#/components/schemas/MediaRef"
+        image_urls:
+          type: array
+          maxItems: 30
+          items:
+            type: string
+            format: uri
+        video_urls:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+            format: uri
+        audio_urls:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+            format: uri
+        frame_images:
+          type: array
+          maxItems: 2
+          description: OpenRouter-style frames; items with frame_type first_frame or last_frame stand for start_image and end_image.
+          items:
+            type: object
+            required: [frame_type]
+            properties:
+              frame_type:
+                type: string
+                enum: [first_frame, last_frame]
+        input_references:
+          type: array
+          description: OpenRouter-style references; items of type image_url, video_url or audio_url are numbered separately per kind in order of appearance.
+          items:
+            type: object
+            required: [type]
+            properties:
+              type:
+                type: string
+                enum: [image_url, video_url, audio_url]
+        omni_reference_task_type:
+          type: string
+          enum: [edit, auto, reference]
+          description: "`edit` edits the first entry of reference_videos. `auto` and `reference` are the same as leaving it out. `extend` is not supported."
+        generate_audio:
+          type: boolean
+          default: true
+          description: The model scores the video itself unless this is false.
+        n:
+          type: integer
+          const: 1
+        watermark:
+          type: boolean
+          const: false
+          description: "`watermark: true` is rejected with 400."
+      dependentRequired:
+        end_image: [start_image]
+      allOf:
+        - description: Frame fields cannot be combined with reference lists, and frame modes take aspect_ratio adaptive only.
+          if:
+            anyOf:
+              - required: [start_image]
+              - required: [image_url]
+          then:
+            not:
+              anyOf:
+                - required: [reference_images]
+                - required: [reference_videos]
+                - required: [reference_audios]
+                - required: [image_urls]
+                - required: [video_urls]
+                - required: [audio_urls]
+            properties:
+              aspect_ratio:
+                const: adaptive
+              ratio:
+                const: adaptive
+        - description: An edit carries exactly one video and nothing else; length and ratio come from that video.
+          if:
+            required: [omni_reference_task_type]
+            properties:
+              omni_reference_task_type:
+                const: edit
+          then:
+            required: [reference_videos]
+            properties:
+              reference_videos:
+                minItems: 1
+                maxItems: 1
+              duration:
+                const: -1
+              aspect_ratio:
+                const: adaptive
+            not:
+              anyOf:
+                - required: [reference_images]
+                - required: [reference_audios]
+                - required: [start_image]
+                - required: [end_image]
+          else:
+            properties:
+              duration:
+                minimum: 4
+              seconds:
+                minimum: 4
+        - description: Text and reference requests reject adaptive.
+          if:
+            not:
+              anyOf:
+                - required: [start_image]
+                - required: [image_url]
+                - required: [frame_images]
+                - required: [omni_reference_task_type]
+                  properties:
+                    omni_reference_task_type:
+                      const: edit
+          then:
+            properties:
+              aspect_ratio:
+                not:
+                  const: adaptive
+              ratio:
+                not:
+                  const: adaptive
+
+    SubmitResponse:
+      type: object
+      required: [request_id]
+      properties:
+        request_id:
+          type: string
+
+    Usage:
+      type: object
+      required: [billed_seconds, output_seconds, reference_video_seconds]
+      properties:
+        output_seconds:
+          type: integer
+          description: Length of the delivered video, rounded to whole seconds.
+        reference_video_seconds:
+          type: integer
+          description: Total length of the reference videos, fractions dropped. An edit counts the edited video here too.
+        billed_seconds:
+          type: integer
+          description: output_seconds + reference_video_seconds; multiplied by the per-second rate of the resolution.
+
+    JobError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable failure code.
+          examples: [invalid_input, content_policy_violation, copyright_violation, generation_failed, generation_timeout, capacity_unavailable, internal_error, cancelled]
+        message:
+          type: string
+        retryable:
+          type: boolean
+          description: True when the failure consumed no generation and submitting the same request again is safe.
+        field:
+          type: string
+          description: The input at fault, when one can be named.
+
+    Job:
+      type: object
+      required: [request_id, status]
+      properties:
+        request_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, done, failed, expired]
+        model:
+          type: string
+        created_at:
+          type: integer
+          description: Submission time in Unix seconds.
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: 0-99 while pending (99 if the job runs past its forecast), 100 when done.
+        estimated_seconds_remaining:
+          type: integer
+          minimum: 0
+          description: Present while pending once a forecast exists.
+        video:
+          type: object
+          properties:
+            duration:
+              type: number
+            url:
+              type: string
+              format: uri
+              description: Full download address, the content endpoint of this job.
+        usage:
+          $ref: "#/components/schemas/Usage"
+        error:
+          $ref: "#/components/schemas/JobError"
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          properties:
+            type:
+              type: string
+              examples: [invalid_request_error, authentication_error, not_found_error, rate_limit_error, overloaded_error, api_error]
+            code:
+              type: string
+              examples: [field_invalid, json_invalid, request_unsupported, video_request_not_found, job_video_not_ready, job_failed, no_capacity]
+            param:
+              type: string
+              description: The request field at fault.
+            message:
+              type: string
+              description: A reason that can be shown to a user.
+
+    UploadTicketRequest:
+      type: object
+      required: [model, type, content_type, size_bytes]
+      properties:
+        model:
+          type: string
+          examples: [seedance-2.5]
+        type:
+          type: string
+          enum: [image, video, audio]
+        content_type:
+          type: string
+          enum: [image/jpeg, image/png, image/webp, video/mp4, video/quicktime, video/webm, audio/mpeg, audio/wav, audio/mp4, audio/aac]
+          description: Seedance generation reads JPEG/PNG images, MP4/MOV video and WAV/MP3 audio; a ticket also accepts the other types listed.
+        size_bytes:
+          type: integer
+          minimum: 1
+          description: Must equal the real file size.
+
+    UploadTicket:
+      type: object
+      required: [upload_url, media_url]
+      properties:
+        upload_url:
+          type: string
+          format: uri
+          description: PUT the bytes here within 15 minutes, with the declared Content-Type.
+        media_url:
+          type: string
+          format: uri
+          description: Use in the generation request; readable for seven days.
+        upload_expires_at:
+          description: When upload_url stops working.
+        expires_at:
+          description: When media_url stops working.
+
+    ModelList:
+      type: object
+      required: [object, data]
+      properties:
+        object:
+          type: string
+          const: list
+        data:
+          type: array
+          items:
+            type: object
+            required: [id, object, owned_by]
+            properties:
+              id:
+                type: string
+              object:
+                type: string
+                const: model
+              created:
+                type: integer
+                description: Compatibility field, fixed at 0.
+              owned_by:
+                type: string
+
+  responses:
+    BadRequest:
+      description: "`field_invalid` / `json_invalid`: the request is malformed. `request_unsupported`: the model does not take this combination (resolution, duration, ratio, seed, asset counts, an @mention past the end). Nothing is charged."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing or invalid API key.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    PaymentRequired:
+      description: Insufficient balance.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: The key's group has no video permission.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: "`video_request_not_found`: unknown request_id, or a key of a different user."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotReady:
+      description: "`job_video_not_ready`: the job is still pending; request the same URL again shortly."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    JobFailed:
+      description: "`job_failed`: the job failed; its status carries the reason in `error`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RateLimited:
+      description: "`rate_limit_error`: concurrency or rate limit reached. Retry after running jobs finish."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unavailable:
+      description: "`overloaded_error` / `no_capacity`, or `api_error`: retry later, after Retry-After when present. Nothing is charged."
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  examples:
+    PendingJob:
+      value:
+        request_id: 2f6c1d0e-8b1a-4c55-9f3e-6a0d7c9b5e21
+        status: pending
+        model: seedance-2.5
+        created_at: 1791370800
+        progress: 42
+        estimated_seconds_remaining: 96
+    DoneJob:
+      value:
+        request_id: 2f6c1d0e-8b1a-4c55-9f3e-6a0d7c9b5e21
+        status: done
+        model: seedance-2.5
+        created_at: 1791370800
+        progress: 100
+        video:
+          duration: 8
+          url: https://argolink.io/v1/videos/2f6c1d0e-8b1a-4c55-9f3e-6a0d7c9b5e21/content
+        usage:
+          output_seconds: 8
+          reference_video_seconds: 0
+          billed_seconds: 8
+    FailedJob:
+      value:
+        request_id: 7d3a9e44-0c2b-4f1e-8a6d-1b5c2e9f0a73
+        status: failed
+        model: seedance-2.5
+        created_at: 1791371400
+        error:
+          code: invalid_input
+          message: aspect_ratio must be adaptive for first-frame, first-last-frame, and edit requests. Set aspect_ratio to adaptive and submit again.
+          retryable: false
+          field: start_image

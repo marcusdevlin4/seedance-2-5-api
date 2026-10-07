@@ -1,0 +1,7 @@
+{
+  "model": "seedance-2.5",
+  "omni_reference_task_type": "edit",
+  "prompt": "Turn the daytime street into a snowy evening with lit shop windows, keep the people and the camera move",
+  "resolution": "720p",
+  "reference_videos": [{"url": "https://example.com/street-day.mp4"}]
+}

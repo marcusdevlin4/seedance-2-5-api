@@ -1,0 +1,9 @@
+{
+  "model": "seedance-2.5",
+  "prompt": "A bare winter tree blossoms branch by branch until it is full of pink flowers, locked-off camera",
+  "duration": 6,
+  "resolution": "720p",
+  "aspect_ratio": "adaptive",
+  "start_image": {"url": "https://example.com/tree-winter.png"},
+  "end_image": {"url": "https://example.com/tree-spring.png"}
+}

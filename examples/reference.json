@@ -1,0 +1,13 @@
+{
+  "model": "seedance-2.5",
+  "prompt": "The skateboarder from @Image 1 rides the empty pool in @Image 2, copying the carve in @Video 1, landing on the beat of @Audio 1",
+  "duration": 10,
+  "resolution": "720p",
+  "aspect_ratio": "9:16",
+  "reference_images": [
+    {"url": "https://example.com/skater.png"},
+    {"url": "https://example.com/pool.jpg"}
+  ],
+  "reference_videos": [{"url": "https://example.com/carve.mp4"}],
+  "reference_audios": [{"url": "https://example.com/track.mp3"}]
+}
